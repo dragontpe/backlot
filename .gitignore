@@ -7,3 +7,4 @@ converter/skp2obj_dbg
 src-tauri/binaries/
 .DS_Store
 converter/*.dSYM/
+.claude/
