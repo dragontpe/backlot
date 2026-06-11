@@ -40,6 +40,10 @@ photo mode: walk into the scene, frame the shot, light it, capture.
   so it always lights the interior regardless of which way the glass faces).
 - **Undo** — Cmd+Z steps back through light placements/edits, daylight changes,
   sky swaps, and bookmark changes.
+- **Jump to area** — a dropdown of places in the scene: the author's saved SketchUp
+  views when the file has them, plus rooms auto-detected from the model's group
+  structure (filtered to room-sized spaces; wall slivers and furniture excluded).
+  Selecting one puts the camera inside that space at eye height.
 - **High-res capture** — 1x–4x PNG export of the viewport, ready for Clip Studio.
 - **Per-scene memory** — lights, bookmarks, time of day, and sky persist per .skp file.
 
@@ -70,7 +74,8 @@ Copy `Backlot.app` to `/Applications`.
 ## Usage
 
 1. **Open .skp** and pick a scene. First open converts and caches it.
-2. Frame your shot: orbit/fly/pan, set FOV. **Save angle** to bookmark the framing.
+2. Frame your shot: use **Jump to area** to get into the right room, then
+   orbit/fly/pan and set FOV. **Save angle** to bookmark the framing.
 3. Light it: drag the **Time** slider; for interiors, click a light preset, then click
    a surface to place it — use the **Window** preset on window glass for daylight
    shafting into the room. Adjust color and intensity per light. Cmd+Z undoes.

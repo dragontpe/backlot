@@ -13,6 +13,61 @@ const LIGHT_PRESETS: { name: string; color: string; intensity: number; kind: "po
   { name: "Window", color: "#cfe2ff", intensity: 60, kind: "window" },
 ];
 
+interface SavedView {
+  name: string;
+  fov: number;
+  position: [number, number, number];
+  target: [number, number, number];
+  kind: "scene" | "area";
+}
+
+interface RawArea {
+  name: string;
+  depth: number;
+  verts: number;
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+/** Turn exported group bboxes into walk-in viewpoints: filter out wall
+ *  slivers/furniture, dedupe nested wrappers, stand at eye height inside. */
+function areasToViews(raw: RawArea[]): SavedView[] {
+  const rooms = raw.filter((a) => {
+    const dx = a.max[0] - a.min[0];
+    const dy = a.max[1] - a.min[1];
+    const dz = a.max[2] - a.min[2];
+    return dx * dy * dz >= 5 && dy >= 1.8 && Math.min(dx, dz) >= 1.5 && a.verts >= 500;
+  });
+  const deduped: RawArea[] = [];
+  for (const a of rooms) {
+    const dup = deduped.some(
+      (b) =>
+        a.min.every((v, i) => Math.abs(v - b.min[i]) < 0.25) &&
+        a.max.every((v, i) => Math.abs(v - b.max[i]) < 0.25)
+    );
+    if (!dup) deduped.push(a);
+  }
+  const floors = [...new Set(deduped.map((a) => Math.round(a.min[1] / 3)))].sort((x, y) => x - y);
+  return deduped.slice(0, 40).map((a, i) => {
+    const dx = a.max[0] - a.min[0];
+    const dz = a.max[2] - a.min[2];
+    const cx = (a.min[0] + a.max[0]) / 2;
+    const cz = (a.min[2] + a.max[2]) / 2;
+    const eyeY = Math.min(a.min[1] + 1.5, a.max[1] - 0.3);
+    const along: [number, number, number] = dx >= dz ? [1, 0, 0] : [0, 0, 1];
+    const floor = floors.indexOf(Math.round(a.min[1] / 3));
+    const floorTag = floors.length > 1 ? ` · ${floor + 1}F` : "";
+    const label = a.name.trim() || `Area ${i + 1} (${dx.toFixed(1)}×${dz.toFixed(1)}m${floorTag})`;
+    return {
+      name: label,
+      fov: 60,
+      position: [cx, eyeY, cz],
+      target: [cx + along[0] * 3, eyeY, cz + along[2] * 3],
+      kind: "area" as const,
+    };
+  });
+}
+
 interface SceneState {
   time: number;
   exposure: number;
@@ -43,6 +98,7 @@ export default function App() {
   const [placing, setPlacing] = useState<(typeof LIGHT_PRESETS)[number] | null>(null);
   const [captureRes, setCaptureRes] = useState(2);
   const [bookmarkName, setBookmarkName] = useState("");
+  const [views, setViews] = useState<SavedView[]>([]);
 
   // Undo: snapshots of SceneState. Slider drags coalesce by key.
   const undoStack = useRef<SceneState[]>([]);
@@ -166,6 +222,19 @@ export default function App() {
     try {
       const { triangles } = await v.load(resolve);
       setStatus(`${(triangles / 1000).toFixed(0)}k triangles`);
+      // Views dropdown: author-saved SketchUp scenes + detected room areas
+      try {
+        const list: SavedView[] = [];
+        const rs = await fetch(resolve("scenes.json"));
+        if (rs.ok) {
+          for (const s of await rs.json()) list.push({ ...s, kind: "scene" });
+        }
+        const ra = await fetch(resolve("areas.json"));
+        if (ra.ok) list.push(...areasToViews(await ra.json()));
+        setViews(list);
+      } catch {
+        setViews([]);
+      }
       // restore saved state or defaults
       const savedRaw = localStorage.getItem(`backlot:${pathKey}`);
       const saved: SceneState = savedRaw ? JSON.parse(savedRaw) : DEFAULT_STATE;
@@ -461,6 +530,47 @@ export default function App() {
 
           <section>
             <h3>Camera</h3>
+            {views.length > 0 && (
+              <label className="row">
+                <span>Jump to area</span>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    const view = views[Number(e.target.value)];
+                    if (!view) return;
+                    viewerRef.current!.applyCameraState(view);
+                    update({ fov: Math.round(view.fov) });
+                    e.target.value = "";
+                  }}
+                >
+                  <option value="" disabled>
+                    {views.length} places…
+                  </option>
+                  {views.some((v) => v.kind === "scene") && (
+                    <optgroup label="Saved views">
+                      {views.map((view, i) =>
+                        view.kind === "scene" ? (
+                          <option key={i} value={i}>
+                            {view.name}
+                          </option>
+                        ) : null
+                      )}
+                    </optgroup>
+                  )}
+                  {views.some((v) => v.kind === "area") && (
+                    <optgroup label="Detected areas">
+                      {views.map((view, i) =>
+                        view.kind === "area" ? (
+                          <option key={i} value={i}>
+                            {view.name}
+                          </option>
+                        ) : null
+                      )}
+                    </optgroup>
+                  )}
+                </select>
+              </label>
+            )}
             <label className="row">
               <span>FOV {state.fov}°</span>
               <input

@@ -35,6 +35,8 @@ DECL_REF(SUMaterialRef);
 DECL_REF(SUTextureRef);
 DECL_REF(SUStringRef);
 DECL_REF(SUDrawingElementRef);
+DECL_REF(SUSceneRef);
+DECL_REF(SUCameraRef);
 
 typedef struct { double x, y, z; } SUPoint3D;
 typedef struct { double x, y, z; } SUVector3D;
@@ -90,6 +92,18 @@ extern SUResult SUStringGetUTF8Length(SUStringRef, size_t*);
 extern SUResult SUStringGetUTF8(SUStringRef, size_t, char*, size_t*);
 extern SUResult SUStringRelease(SUStringRef*);
 
+extern SUResult SUGroupGetName(SUGroupRef, SUStringRef*);
+extern SUResult SUComponentInstanceGetName(SUComponentInstanceRef, SUStringRef*);
+extern SUResult SUComponentDefinitionGetName(SUComponentDefinitionRef, SUStringRef*);
+
+extern SUResult SUModelGetNumScenes(SUModelRef, size_t*);
+extern SUResult SUModelGetScenes(SUModelRef, size_t, SUSceneRef[], size_t*);
+extern SUResult SUSceneGetName(SUSceneRef, SUStringRef*);
+extern SUResult SUSceneGetCamera(SUSceneRef, SUCameraRef*);
+extern SUResult SUCameraGetOrientation(SUCameraRef, SUPoint3D*, SUPoint3D*, SUVector3D*);
+extern SUResult SUCameraGetPerspectiveFrustumFOV(SUCameraRef, double*);
+extern SUResult SUCameraGetPerspective(SUCameraRef, _Bool*);
+
 /* ---- conversion state ---- */
 
 #define INCH_TO_M 0.0254
@@ -106,6 +120,21 @@ typedef struct {
 static Material g_mats[4096];
 static size_t g_num_mats = 0;
 static char g_outdir[1024];
+
+/* Top-level groups/components become navigable "areas" (floors, rooms,
+ * zones — however the author organized the model). */
+typedef struct {
+    char name[128];
+    double min[3], max[3];
+    long long verts;
+    int depth;
+} Area;
+static Area g_areas[4096];
+static size_t g_num_areas = 0;
+/* Stack of active areas: a vertex counts toward every enclosing one. */
+static int g_area_stack[8];
+static int g_area_sp = 0;
+#define AREA_MAX_DEPTH 2
 
 static FILE *g_obj, *g_mtl;
 static size_t g_voffset = 1;          /* OBJ indices are 1-based, global */
@@ -250,6 +279,14 @@ static void emit_face(SUFaceRef face, const double xf[16], int inherited_mat) {
         if (x < g_min[0]) g_min[0] = x; if (x > g_max[0]) g_max[0] = x;
         if (y < g_min[1]) g_min[1] = y; if (y > g_max[1]) g_max[1] = y;
         if (z < g_min[2]) g_min[2] = z; if (z > g_max[2]) g_max[2] = z;
+        for (int s = 0; s < g_area_sp; s++) {
+            if (g_area_stack[s] < 0) continue;
+            Area *ar = &g_areas[g_area_stack[s]];
+            if (x < ar->min[0]) ar->min[0] = x; if (x > ar->max[0]) ar->max[0] = x;
+            if (y < ar->min[1]) ar->min[1] = y; if (y > ar->max[1]) ar->max[1] = y;
+            if (z < ar->min[2]) ar->min[2] = z; if (z > ar->max[2]) ar->max[2] = z;
+            ar->verts++;
+        }
         double q = (fabs(stq[i].z) > 1e-12) ? stq[i].z : 1.0;
         fprintf(g_obj, "v %.6f %.6f %.6f\nvt %.6f %.6f\nvn %.4f %.4f %.4f\n",
                 x, y, z, stq[i].x / q, stq[i].y / q, n[0], n[2], -n[1]);
@@ -276,6 +313,20 @@ static void emit_face(SUFaceRef face, const double xf[16], int inherited_mat) {
 }
 
 /* ---- recursive traversal ---- */
+
+static void area_push(const char *name, int depth) {
+    if (g_num_areas >= 4096 || g_area_sp >= 8) { g_area_stack[g_area_sp++] = -1; return; }
+    Area *ar = &g_areas[g_num_areas];
+    snprintf(ar->name, sizeof ar->name, "%s", name);
+    for (int k = 0; k < 3; k++) { ar->min[k] = 1e30; ar->max[k] = -1e30; }
+    ar->verts = 0;
+    ar->depth = depth;
+    g_area_stack[g_area_sp++] = (int)g_num_areas++;
+}
+
+static void area_pop(void) {
+    if (g_area_sp > 0) g_area_sp--;
+}
 
 static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int depth) {
     if (depth > 64) return;
@@ -305,9 +356,20 @@ static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int
             int mi = gm.ptr ? register_material(gm) : inherited_mat;
             SUTransformation t; SUGroupGetTransform(groups[i], &t);
             double combined[16]; mat_mul(xf, t.values, combined);
+
+            int pushed = 0;
+            if (depth <= AREA_MAX_DEPTH) {
+                char name[128] = "";
+                SUStringRef s = {0}; SUStringCreate(&s);
+                if (SUGroupGetName(groups[i], &s) == SU_OK) su_string_to_buf(s, name, sizeof name);
+                if (s.ptr) SUStringRelease(&s);
+                area_push(name, depth);
+                pushed = 1;
+            }
             SUEntitiesRef child = {0};
             if (SUGroupGetEntities(groups[i], &child) == SU_OK)
                 walk(child, combined, mi, depth + 1);
+            if (pushed) area_pop();
         }
         free(groups);
     }
@@ -329,12 +391,116 @@ static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int
             if (SUComponentInstanceGetDefinition(insts[i], &def) != SU_OK || !def.ptr) continue;
             SUTransformation t; SUComponentInstanceGetTransform(insts[i], &t);
             double combined[16]; mat_mul(xf, t.values, combined);
+
+            int pushed = 0;
+            if (depth <= AREA_MAX_DEPTH) {
+                char name[128] = "";
+                SUStringRef s = {0}; SUStringCreate(&s);
+                if (SUComponentInstanceGetName(insts[i], &s) == SU_OK)
+                    su_string_to_buf(s, name, sizeof name);
+                if (s.ptr) SUStringRelease(&s);
+                if (!name[0]) {
+                    SUStringRef ds = {0}; SUStringCreate(&ds);
+                    if (SUComponentDefinitionGetName(def, &ds) == SU_OK)
+                        su_string_to_buf(ds, name, sizeof name);
+                    if (ds.ptr) SUStringRelease(&ds);
+                }
+                area_push(name, depth);
+                pushed = 1;
+            }
             SUEntitiesRef child = {0};
             if (SUComponentDefinitionGetEntities(def, &child) == SU_OK)
                 walk(child, combined, mi, depth + 1);
+            if (pushed) area_pop();
         }
         free(insts);
     }
+}
+
+/* ---- scene (saved view) export ---- */
+
+static void json_escape(const char *in, char *out, size_t outlen) {
+    size_t o = 0;
+    for (const char *p = in; *p && o + 6 < outlen; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c < 0x20) { o += snprintf(out + o, outlen - o, "\\u%04x", c); }
+        else out[o++] = (char)c;
+    }
+    out[o] = '\0';
+}
+
+/* SketchUp "scenes" are the named view tabs authors set up per room/area.
+ * Export their cameras (converted to meters, Y-up) as scenes.json. */
+static void export_scenes(SUModelRef model) {
+    size_t n = 0;
+    SUModelGetNumScenes(model, &n);
+    char path[1400];
+    snprintf(path, sizeof path, "%s/scenes.json", g_outdir);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "[");
+    if (n) {
+        SUSceneRef *scenes = malloc(n * sizeof *scenes);
+        size_t got = 0;
+        SUModelGetScenes(model, n, scenes, &got);
+        int emitted = 0;
+        for (size_t i = 0; i < got; i++) {
+            SUCameraRef cam = {0};
+            if (SUSceneGetCamera(scenes[i], &cam) != SU_OK || !cam.ptr) continue;
+            SUPoint3D pos, tgt; SUVector3D up;
+            if (SUCameraGetOrientation(cam, &pos, &tgt, &up) != SU_OK) continue;
+            _Bool persp = 1;
+            SUCameraGetPerspective(cam, &persp);
+            double fov = 50.0;
+            if (persp) SUCameraGetPerspectiveFrustumFOV(cam, &fov);
+            if (fov < 5 || fov > 140) fov = 50.0;
+
+            char name[128] = "View";
+            SUStringRef s = {0}; SUStringCreate(&s);
+            if (SUSceneGetName(scenes[i], &s) == SU_OK) su_string_to_buf(s, name, sizeof name);
+            if (s.ptr) SUStringRelease(&s);
+            char esc[300];
+            json_escape(name, esc, sizeof esc);
+
+            fprintf(f,
+                "%s\n  {\"name\":\"%s\",\"fov\":%.1f,"
+                "\"position\":[%.4f,%.4f,%.4f],\"target\":[%.4f,%.4f,%.4f]}",
+                emitted ? "," : "", esc, fov,
+                pos.x * INCH_TO_M, pos.z * INCH_TO_M, -pos.y * INCH_TO_M,
+                tgt.x * INCH_TO_M, tgt.z * INCH_TO_M, -tgt.y * INCH_TO_M);
+            emitted++;
+        }
+        free(scenes);
+        fprintf(stderr, "scenes: %d exported\n", emitted);
+    }
+    fprintf(f, "\n]\n");
+    fclose(f);
+}
+
+static void export_areas(void) {
+    char path[1400];
+    snprintf(path, sizeof path, "%s/areas.json", g_outdir);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "[");
+    int emitted = 0;
+    for (size_t i = 0; i < g_num_areas; i++) {
+        Area *ar = &g_areas[i];
+        if (ar->verts < 50 || ar->min[0] > ar->max[0]) continue;
+        char esc[300];
+        json_escape(ar->name, esc, sizeof esc);
+        fprintf(f,
+            "%s\n  {\"name\":\"%s\",\"depth\":%d,\"verts\":%lld,"
+            "\"min\":[%.3f,%.3f,%.3f],\"max\":[%.3f,%.3f,%.3f]}",
+            emitted ? "," : "", esc, ar->depth, ar->verts,
+            ar->min[0], ar->min[1], ar->min[2],
+            ar->max[0], ar->max[1], ar->max[2]);
+        emitted++;
+    }
+    fprintf(f, "\n]\n");
+    fclose(f);
+    fprintf(stderr, "areas: %d exported\n", emitted);
 }
 
 /* ---- main ---- */
@@ -375,6 +541,8 @@ int main(int argc, char **argv) {
     SUModelGetEntities(model, &ents);
     double identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     walk(ents, identity, -1, 0);
+    export_scenes(model);
+    export_areas();
 
     /* MTL: default + everything registered during the walk */
     fprintf(g_mtl, "newmtl default\nKd 0.8 0.8 0.8\n");

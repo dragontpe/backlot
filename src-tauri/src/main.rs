@@ -34,6 +34,7 @@ fn converter_path() -> Result<PathBuf, String> {
 fn cache_dir_for(skp: &Path) -> Result<PathBuf, String> {
     let meta = fs::metadata(skp).map_err(|e| format!("cannot stat {}: {e}", skp.display()))?;
     let mut h = DefaultHasher::new();
+    "cache-v2".hash(&mut h); // bump when converter output format changes
     skp.to_string_lossy().hash(&mut h);
     meta.len().hash(&mut h);
     if let Ok(m) = meta.modified() {

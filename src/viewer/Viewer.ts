@@ -69,6 +69,7 @@ export class Viewer {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun, this.sun.target, this.hemi, this.markers);
 
     window.addEventListener("keydown", (e) => {
@@ -181,6 +182,7 @@ export class Viewer {
     mtl.preload();
     const obj = await new OBJLoader(manager).setMaterials(mtl).loadAsync("model.obj");
 
+    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     let triangles = 0;
     obj.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -192,7 +194,11 @@ export class Viewer {
       mats.forEach((mat) => {
         const m = mat as THREE.MeshPhongMaterial;
         m.side = THREE.DoubleSide;
-        if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+        m.dithering = true; // kills banding rings in smooth light falloff
+        if (m.map) {
+          m.map.colorSpace = THREE.SRGBColorSpace;
+          m.map.anisotropy = Math.min(8, maxAniso); // kills moiré on oblique fine textures
+        }
         if (m.transparent && m.opacity > 0.98) m.transparent = false;
       });
     });
@@ -291,6 +297,7 @@ export class Viewer {
       spot.castShadow = true;
       spot.shadow.mapSize.set(1024, 1024);
       spot.shadow.bias = -0.002;
+      spot.shadow.normalBias = 0.04;
       this.scene.add(spot.target);
       light = spot;
       marker = new THREE.Mesh(
@@ -303,7 +310,11 @@ export class Viewer {
       const point = new THREE.PointLight(def.color, def.intensity, 0, 2);
       point.position.set(...def.position);
       point.castShadow = this.lights.size < 4; // cap shadow-casting lights for perf
-      if (point.castShadow) point.shadow.mapSize.set(512, 512);
+      if (point.castShadow) {
+        point.shadow.mapSize.set(1024, 1024);
+        point.shadow.bias = -0.002;
+        point.shadow.normalBias = 0.05; // stops acne rings on walls/ceilings
+      }
       light = point;
       marker = new THREE.Mesh(
         new THREE.SphereGeometry(0.09, 12, 8),
