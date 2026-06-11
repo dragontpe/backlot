@@ -4,12 +4,13 @@ import { formatHour } from "./viewer/daylight";
 
 const IS_TAURI = "__TAURI_INTERNALS__" in window;
 
-const LIGHT_PRESETS = [
-  { name: "Lamp", color: "#ffb46b", intensity: 40 },
-  { name: "Fluorescent", color: "#e4fff4", intensity: 60 },
-  { name: "Bulb", color: "#fff1d6", intensity: 35 },
-  { name: "Neon pink", color: "#ff5fa2", intensity: 30 },
-  { name: "TV glow", color: "#7fb4ff", intensity: 25 },
+const LIGHT_PRESETS: { name: string; color: string; intensity: number; kind: "point" | "window" }[] = [
+  { name: "Lamp", color: "#ffb46b", intensity: 40, kind: "point" },
+  { name: "Fluorescent", color: "#e4fff4", intensity: 60, kind: "point" },
+  { name: "Bulb", color: "#fff1d6", intensity: 35, kind: "point" },
+  { name: "Neon pink", color: "#ff5fa2", intensity: 30, kind: "point" },
+  { name: "TV glow", color: "#7fb4ff", intensity: 25, kind: "point" },
+  { name: "Window", color: "#cfe2ff", intensity: 60, kind: "window" },
 ];
 
 interface SceneState {
@@ -39,9 +40,13 @@ export default function App() {
   const [status, setStatus] = useState("Open a .skp scene to begin");
   const [busy, setBusy] = useState(false);
   const [state, setState] = useState<SceneState>(DEFAULT_STATE);
-  const [placing, setPlacing] = useState<{ color: string; intensity: number; name: string } | null>(null);
+  const [placing, setPlacing] = useState<(typeof LIGHT_PRESETS)[number] | null>(null);
   const [captureRes, setCaptureRes] = useState(2);
   const [bookmarkName, setBookmarkName] = useState("");
+
+  // Undo: snapshots of SceneState. Slider drags coalesce by key.
+  const undoStack = useRef<SceneState[]>([]);
+  const lastUndoKey = useRef<{ key: string; at: number }>({ key: "", at: 0 });
 
   // ---- viewer lifecycle ----
   useEffect(() => {
@@ -74,16 +79,69 @@ export default function App() {
     [persistKey]
   );
 
+  /** Snapshot current state for Cmd+Z. Same key within 1.2s coalesces
+   *  (one undo step per slider drag, not per tick). */
+  const pushUndo = useCallback((key: string) => {
+    const now = Date.now();
+    if (lastUndoKey.current.key === key && now - lastUndoKey.current.at < 1200) {
+      lastUndoKey.current.at = now;
+      return;
+    }
+    lastUndoKey.current = { key, at: now };
+    setState((prev) => {
+      undoStack.current.push(JSON.parse(JSON.stringify(prev)));
+      if (undoStack.current.length > 50) undoStack.current.shift();
+      return prev;
+    });
+  }, []);
+
   const update = useCallback(
-    (patch: Partial<SceneState>) => {
+    (patch: Partial<SceneState>, undoKey?: string) => {
+      if (undoKey) pushUndo(undoKey);
       setState((prev) => {
         const next = { ...prev, ...patch };
         persist(next);
         return next;
       });
     },
-    [persist]
+    [persist, pushUndo]
   );
+
+  const undo = useCallback(() => {
+    const snapshot = undoStack.current.pop();
+    if (!snapshot) return;
+    lastUndoKey.current = { key: "", at: 0 };
+    const v = viewerRef.current!;
+    v.syncLights(snapshot.lights);
+    v.setTimeOfDay(snapshot.time);
+    v.setExposure(snapshot.exposure);
+    v.setFov(snapshot.fov);
+    setState((prev) => {
+      if (snapshot.skyPath !== prev.skyPath) {
+        (async () => {
+          try {
+            await v.setSkyImage(
+              snapshot.skyPath ? (IS_TAURI ? await assetUrl(snapshot.skyPath) : snapshot.skyPath) : null
+            );
+          } catch { /* sky file gone */ }
+        })();
+      }
+      persist(snapshot);
+      return snapshot;
+    });
+    setStatus("Undone");
+  }, [persist]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo]);
 
   // ---- apply state to viewer ----
   useEffect(() => {
@@ -135,6 +193,8 @@ export default function App() {
       } else {
         v.frameModel();
       }
+      undoStack.current = [];
+      lastUndoKey.current = { key: "", at: 0 };
     } catch (e) {
       setStatus(`Load failed: ${e}`);
     } finally {
@@ -175,12 +235,12 @@ export default function App() {
     });
     if (typeof picked !== "string") return;
     await viewerRef.current!.setSkyImage(await assetUrl(picked));
-    update({ skyPath: picked });
+    update({ skyPath: picked }, "sky");
   }
 
   async function clearSky() {
     await viewerRef.current!.setSkyImage(null);
-    update({ skyPath: null });
+    update({ skyPath: null }, "sky");
   }
 
   // ---- lights ----
@@ -189,11 +249,17 @@ export default function App() {
     setPlacing(preset);
     v.placing = true;
     v.onPlace = (p) => {
+      pushUndo(`light-add-${Date.now()}`);
       const def = v.addLight({
         name: preset.name,
         color: preset.color,
         intensity: preset.intensity,
         position: [p.x, p.y, p.z],
+        kind: preset.kind,
+        target:
+          preset.kind === "window"
+            ? (v.camera.position.toArray() as [number, number, number])
+            : undefined,
       });
       setState((prev) => {
         const next = { ...prev, lights: [...prev.lights, def] };
@@ -214,6 +280,7 @@ export default function App() {
   }
 
   function changeLight(id: number, patch: Partial<PointLightDef>) {
+    pushUndo(`light-edit-${id}`);
     setState((prev) => {
       const lights = prev.lights.map((l) => (l.id === id ? { ...l, ...patch } : l));
       const updated = lights.find((l) => l.id === id)!;
@@ -225,6 +292,7 @@ export default function App() {
   }
 
   function removeLight(id: number) {
+    pushUndo(`light-del-${Date.now()}`);
     viewerRef.current!.removeLight(id);
     setState((prev) => {
       const next = { ...prev, lights: prev.lights.filter((l) => l.id !== id) };
@@ -238,7 +306,7 @@ export default function App() {
     const v = viewerRef.current!;
     const name = bookmarkName.trim() || `Angle ${state.bookmarks.length + 1}`;
     const b: CameraBookmark = { name, ...v.getCameraState() };
-    update({ bookmarks: [...state.bookmarks, b] });
+    update({ bookmarks: [...state.bookmarks, b] }, `bm-add-${Date.now()}`);
     setBookmarkName("");
   }
 
@@ -248,7 +316,7 @@ export default function App() {
   }
 
   function removeBookmark(i: number) {
-    update({ bookmarks: state.bookmarks.filter((_, j) => j !== i) });
+    update({ bookmarks: state.bookmarks.filter((_, j) => j !== i) }, `bm-del-${Date.now()}`);
   }
 
   // ---- capture ----
@@ -329,7 +397,7 @@ export default function App() {
               <input
                 type="range" min={0} max={24} step={0.25}
                 value={state.time}
-                onChange={(e) => update({ time: Number(e.target.value) })}
+                onChange={(e) => update({ time: Number(e.target.value) }, "time")}
               />
             </label>
             <label className="row">
@@ -337,7 +405,7 @@ export default function App() {
               <input
                 type="range" min={0.3} max={2.5} step={0.05}
                 value={state.exposure}
-                onChange={(e) => update({ exposure: Number(e.target.value) })}
+                onChange={(e) => update({ exposure: Number(e.target.value) }, "exposure")}
               />
             </label>
             <div className="row buttons">
@@ -370,6 +438,7 @@ export default function App() {
             </div>
             {state.lights.map((l) => (
               <div className="light-row" key={l.id}>
+                <span className="light-name">{l.kind === "window" ? "▢" : "●"}</span>
                 <input
                   type="color"
                   value={l.color}
@@ -385,7 +454,9 @@ export default function App() {
                 </button>
               </div>
             ))}
-            {state.lights.length === 0 && <div className="hint">For interiors: place lamps & tubes.</div>}
+            {state.lights.length === 0 && (
+              <div className="hint">For interiors: place lamps & tubes — or click a window with the Window preset. Cmd+Z undoes.</div>
+            )}
           </section>
 
           <section>
@@ -395,7 +466,7 @@ export default function App() {
               <input
                 type="range" min={15} max={100} step={1}
                 value={state.fov}
-                onChange={(e) => update({ fov: Number(e.target.value) })}
+                onChange={(e) => update({ fov: Number(e.target.value) }, "fov")}
               />
             </label>
             <div className="row buttons">

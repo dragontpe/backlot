@@ -10,6 +10,10 @@ export interface PointLightDef {
   color: string;
   intensity: number;
   position: [number, number, number];
+  /** "window" = soft rect area light shining into the room. */
+  kind?: "point" | "window";
+  /** For window lights: point the light faces (placement-time camera). */
+  target?: [number, number, number];
 }
 
 export interface CameraBookmark {
@@ -32,7 +36,7 @@ export class Viewer {
   private skyTexture: THREE.Texture | null = null;
   private bgColor = new THREE.Color(0x8cb9eb);
 
-  private lights = new Map<number, THREE.PointLight>();
+  private lights = new Map<number, THREE.PointLight | THREE.SpotLight>();
   private markers = new THREE.Group();
   private nextLightId = 1;
 
@@ -83,10 +87,11 @@ export class Viewer {
       this.raycaster.setFromCamera(ndc, this.camera);
       const hits = this.raycaster.intersectObject(this.model, true);
       if (hits.length) {
+        // Nudge toward the camera — face normals in .skp content are
+        // unreliable, but "toward the viewer" always lands inside the room.
         const p = hits[0].point.clone();
-        if (hits[0].face) {
-          p.addScaledVector(hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld), 0.25);
-        }
+        const toCam = this.camera.position.clone().sub(p).normalize();
+        p.addScaledVector(toCam, 0.2);
         this.onPlace?.(p);
       }
     });
@@ -267,22 +272,46 @@ export class Viewer {
     this.scene.background = tex;
   }
 
-  // ---- point lights ----
+  // ---- point & window lights ----
 
-  addLight(def: Omit<PointLightDef, "id">): PointLightDef {
-    const id = this.nextLightId++;
+  addLight(def: Omit<PointLightDef, "id"> & { id?: number }): PointLightDef {
+    const id = def.id ?? this.nextLightId++;
+    if (id >= this.nextLightId) this.nextLightId = id + 1;
     const full: PointLightDef = { ...def, id };
-    const light = new THREE.PointLight(def.color, def.intensity, 0, 2);
-    light.position.set(...def.position);
-    light.castShadow = this.lights.size < 4; // cap shadow-casting lights for perf
-    if (light.castShadow) light.shadow.mapSize.set(512, 512);
-    this.scene.add(light);
 
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 12, 8),
-      new THREE.MeshBasicMaterial({ color: def.color })
-    );
-    marker.position.copy(light.position);
+    let light: THREE.PointLight | THREE.SpotLight;
+    let marker: THREE.Mesh;
+    if (def.kind === "window") {
+      // Wide, soft spotlight = light shafting in through a window. SpotLight
+      // (unlike RectAreaLight) works with the Phong materials MTL loading
+      // produces, and can cast shadows.
+      const spot = new THREE.SpotLight(def.color, def.intensity, 0, Math.PI / 2.6, 1, 1.4);
+      spot.position.set(...def.position);
+      spot.target.position.set(...(def.target ?? [0, 0, 0]));
+      spot.castShadow = true;
+      spot.shadow.mapSize.set(1024, 1024);
+      spot.shadow.bias = -0.002;
+      this.scene.add(spot.target);
+      light = spot;
+      marker = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.6, 1.3),
+        new THREE.MeshBasicMaterial({ color: def.color, wireframe: true })
+      );
+      marker.position.copy(spot.position);
+      marker.lookAt(spot.target.position);
+    } else {
+      const point = new THREE.PointLight(def.color, def.intensity, 0, 2);
+      point.position.set(...def.position);
+      point.castShadow = this.lights.size < 4; // cap shadow-casting lights for perf
+      if (point.castShadow) point.shadow.mapSize.set(512, 512);
+      light = point;
+      marker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 12, 8),
+        new THREE.MeshBasicMaterial({ color: def.color })
+      );
+      marker.position.copy(point.position);
+    }
+    this.scene.add(light);
     marker.name = `marker-${id}`;
     this.markers.add(marker);
 
@@ -296,17 +325,28 @@ export class Viewer {
     light.color.set(def.color);
     light.intensity = def.intensity;
     light.position.set(...def.position);
+    if (def.kind === "window" && def.target && (light as THREE.SpotLight).isSpotLight) {
+      (light as THREE.SpotLight).target.position.set(...def.target);
+    }
     const marker = this.markers.getObjectByName(`marker-${def.id}`) as THREE.Mesh | undefined;
     if (marker) {
       marker.position.copy(light.position);
+      if (def.kind === "window" && def.target) marker.lookAt(...def.target);
       (marker.material as THREE.MeshBasicMaterial).color.set(def.color);
     }
+  }
+
+  /** Replace all lights with the given defs (used by undo restore). */
+  syncLights(defs: PointLightDef[]) {
+    this.clearLights();
+    defs.forEach((d) => this.addLight(d));
   }
 
   removeLight(id: number) {
     const light = this.lights.get(id);
     if (!light) return;
     this.scene.remove(light);
+    if ((light as THREE.SpotLight).isSpotLight) this.scene.remove((light as THREE.SpotLight).target);
     light.dispose();
     this.lights.delete(id);
     const marker = this.markers.getObjectByName(`marker-${id}`);

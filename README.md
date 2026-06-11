@@ -35,6 +35,11 @@ photo mode: walk into the scene, frame the shot, light it, capture.
 - **Sky images** — drop any PNG/JPG behind the model.
 - **Practical point lights** — click-to-place lamps, fluorescents, bulbs, neon, and TV
   glow for interior scenes; per-light color and intensity.
+- **Window light** — click a window with the Window preset and a soft, wide,
+  shadow-casting light shines into the room (oriented toward where you're standing,
+  so it always lights the interior regardless of which way the glass faces).
+- **Undo** — Cmd+Z steps back through light placements/edits, daylight changes,
+  sky swaps, and bookmark changes.
 - **High-res capture** — 1x–4x PNG export of the viewport, ready for Clip Studio.
 - **Per-scene memory** — lights, bookmarks, time of day, and sky persist per .skp file.
 
@@ -67,7 +72,8 @@ Copy `Backlot.app` to `/Applications`.
 1. **Open .skp** and pick a scene. First open converts and caches it.
 2. Frame your shot: orbit/fly/pan, set FOV. **Save angle** to bookmark the framing.
 3. Light it: drag the **Time** slider; for interiors, click a light preset, then click
-   a surface to place it. Adjust color and intensity per light.
+   a surface to place it — use the **Window** preset on window glass for daylight
+   shafting into the room. Adjust color and intensity per light. Cmd+Z undoes.
 4. Optional: **Sky image…** to put a sky/cityscape behind the model.
 5. Pick capture resolution (2x recommended) and hit **Capture**.
 
@@ -80,6 +86,7 @@ Copy `Backlot.app` to `/Applications`.
 | Q / E | down / up |
 | ← → ↑ ↓ | precise screen-space pan |
 | Shift | 4x speed |
+| Cmd+Z | undo |
 
 ## How it works
 
