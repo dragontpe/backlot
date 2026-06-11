@@ -45,6 +45,8 @@ photo mode: walk into the scene, frame the shot, light it, capture.
   structure (filtered to room-sized spaces; wall slivers and furniture excluded).
   Selecting one puts the camera inside that space at eye height.
 - **High-res capture** — 1x–4x PNG export of the viewport, ready for Clip Studio.
+  Light position markers are never rendered in captures, and a "Show light markers"
+  toggle lets you preview the exact final frame in the viewport too.
 - **Per-scene memory** — lights, bookmarks, time of day, and sky persist per .skp file.
 
 | Golden hour | Night + practicals |
