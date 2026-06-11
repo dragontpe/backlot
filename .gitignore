@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+converter/skp2obj
+converter/skp2obj_dbg
+src-tauri/binaries/
+.DS_Store
+converter/*.dSYM/
