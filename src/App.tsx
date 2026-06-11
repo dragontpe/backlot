@@ -99,6 +99,7 @@ export default function App() {
   const [captureRes, setCaptureRes] = useState(2);
   const [bookmarkName, setBookmarkName] = useState("");
   const [views, setViews] = useState<SavedView[]>([]);
+  const [markersVisible, setMarkersVisible] = useState(true);
 
   // Undo: snapshots of SceneState. Slider drags coalesce by key.
   const undoStack = useRef<SceneState[]>([]);
@@ -315,6 +316,9 @@ export default function App() {
   // ---- lights ----
   function startPlacing(preset: (typeof LIGHT_PRESETS)[number]) {
     const v = viewerRef.current!;
+    // placing a light you can't see is guesswork — force markers on
+    setMarkersVisible(true);
+    v.setMarkersVisible(true);
     setPlacing(preset);
     v.placing = true;
     v.onPlace = (p) => {
@@ -525,6 +529,19 @@ export default function App() {
             ))}
             {state.lights.length === 0 && (
               <div className="hint">For interiors: place lamps & tubes — or click a window with the Window preset. Cmd+Z undoes.</div>
+            )}
+            {state.lights.length > 0 && (
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={markersVisible}
+                  onChange={(e) => {
+                    setMarkersVisible(e.target.checked);
+                    viewerRef.current!.setMarkersVisible(e.target.checked);
+                  }}
+                />
+                Show light markers
+              </label>
             )}
           </section>
 
