@@ -4,6 +4,17 @@ import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { daylightAt } from "./daylight";
 
+// three's stock dither is ±0.5 LSB — too weak to hide banding in dark, slow
+// light-falloff gradients (night walls). Replace with ~±1.5 LSB triangular
+// noise; must run before any material compiles.
+THREE.ShaderChunk.dithering_pars_fragment = /* glsl */ `
+vec3 dithering( vec3 color ) {
+  float r1 = fract( sin( dot( gl_FragCoord.xy, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+  float r2 = fract( sin( dot( gl_FragCoord.xy + vec2( 17.13, 41.7 ), vec2( 39.3468, 11.135 ) ) ) * 24634.6345 );
+  return color + vec3( ( r1 + r2 - 1.0 ) * ( 1.5 / 255.0 ) );
+}
+`;
+
 export interface PointLightDef {
   id: number;
   name: string;
