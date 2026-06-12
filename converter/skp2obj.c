@@ -136,6 +136,12 @@ static int g_area_stack[8];
 static int g_area_sp = 0;
 #define AREA_MAX_DEPTH 2
 
+/* Groups/instances down to this depth become their own OBJ "g" object so
+ * the viewer can pick & hide them. Deeper geometry merges into its
+ * nearest emitted ancestor (keeps three.js mesh count sane). */
+#define OBJ_GROUP_MAX_DEPTH 3
+static long long g_num_objects = 0;
+
 static FILE *g_obj, *g_mtl;
 static size_t g_voffset = 1;          /* OBJ indices are 1-based, global */
 static long long g_tris = 0, g_faces = 0, g_skipped_faces = 0;
@@ -328,6 +334,19 @@ static void area_pop(void) {
     if (g_area_sp > 0) g_area_sp--;
 }
 
+/* Start a new OBJ object: "g obj<id> <label>". Viewer parses the id for
+ * stable hide-state persistence and shows the label. Material is re-declared
+ * inside each object (g_cur_mat reset) — don't rely on loaders carrying
+ * usemtl state across object boundaries. */
+static void emit_object(const char *name, const char *fallback) {
+    char label[128];
+    snprintf(label, sizeof label, "%s", name[0] ? name : fallback);
+    for (char *p = label; *p; p++)
+        if ((unsigned char)*p < 0x20 || *p == '#') *p = ' ';
+    fprintf(g_obj, "g obj%lld %s\n", g_num_objects++, label);
+    g_cur_mat = -2;
+}
+
 static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int depth) {
     if (depth > 64) return;
 
@@ -358,13 +377,13 @@ static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int
             double combined[16]; mat_mul(xf, t.values, combined);
 
             int pushed = 0;
-            if (depth <= AREA_MAX_DEPTH) {
+            if (depth <= AREA_MAX_DEPTH || depth <= OBJ_GROUP_MAX_DEPTH) {
                 char name[128] = "";
                 SUStringRef s = {0}; SUStringCreate(&s);
                 if (SUGroupGetName(groups[i], &s) == SU_OK) su_string_to_buf(s, name, sizeof name);
                 if (s.ptr) SUStringRelease(&s);
-                area_push(name, depth);
-                pushed = 1;
+                if (depth <= AREA_MAX_DEPTH) { area_push(name, depth); pushed = 1; }
+                if (depth <= OBJ_GROUP_MAX_DEPTH) emit_object(name, "Group");
             }
             SUEntitiesRef child = {0};
             if (SUGroupGetEntities(groups[i], &child) == SU_OK)
@@ -393,7 +412,7 @@ static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int
             double combined[16]; mat_mul(xf, t.values, combined);
 
             int pushed = 0;
-            if (depth <= AREA_MAX_DEPTH) {
+            if (depth <= AREA_MAX_DEPTH || depth <= OBJ_GROUP_MAX_DEPTH) {
                 char name[128] = "";
                 SUStringRef s = {0}; SUStringCreate(&s);
                 if (SUComponentInstanceGetName(insts[i], &s) == SU_OK)
@@ -405,8 +424,8 @@ static void walk(SUEntitiesRef ents, const double xf[16], int inherited_mat, int
                         su_string_to_buf(ds, name, sizeof name);
                     if (ds.ptr) SUStringRelease(&ds);
                 }
-                area_push(name, depth);
-                pushed = 1;
+                if (depth <= AREA_MAX_DEPTH) { area_push(name, depth); pushed = 1; }
+                if (depth <= OBJ_GROUP_MAX_DEPTH) emit_object(name, "Object");
             }
             SUEntitiesRef child = {0};
             if (SUComponentDefinitionGetEntities(def, &child) == SU_OK)
@@ -536,6 +555,7 @@ int main(int argc, char **argv) {
     if (!g_obj || !g_mtl) { fprintf(stderr, "ERROR: cannot open output files\n"); return 1; }
 
     fprintf(g_obj, "mtllib model.mtl\n");
+    emit_object("", "Base"); /* top-level loose faces (terrain, roads) */
 
     SUEntitiesRef ents = {0};
     SUModelGetEntities(model, &ents);
@@ -560,9 +580,9 @@ int main(int argc, char **argv) {
     SUTerminate();
 
     fprintf(stderr,
-        "done: %lld faces -> %lld triangles, %zu vertices, %zu materials, %lld skipped\n"
+        "done: %lld faces -> %lld triangles, %zu vertices, %zu materials, %lld objects, %lld skipped\n"
         "bbox (m): x[%.2f..%.2f] y[%.2f..%.2f] z[%.2f..%.2f]\n",
-        g_faces, g_tris, g_voffset - 1, g_num_mats, g_skipped_faces,
+        g_faces, g_tris, g_voffset - 1, g_num_mats, g_num_objects, g_skipped_faces,
         g_min[0], g_max[0], g_min[1], g_max[1], g_min[2], g_max[2]);
     return 0;
 }

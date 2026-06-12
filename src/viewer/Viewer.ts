@@ -27,6 +27,12 @@ export interface PointLightDef {
   target?: [number, number, number];
 }
 
+/** "obj42 Roof" → "Roof #42" (converter writes "g obj<id> <label>"). */
+export function objectLabel(name: string): string {
+  const m = name.match(/^obj(\d+)\s*(.*)$/);
+  return m ? `${m[2] || "Object"} #${m[1]}` : name || "Object";
+}
+
 export interface CameraBookmark {
   name: string;
   position: [number, number, number];
@@ -55,8 +61,26 @@ export class Viewer {
   private clock = new THREE.Clock();
   private raycaster = new THREE.Raycaster();
 
+  /** One mesh per converter-emitted OBJ object ("g objN label") — the
+   *  clickable/hideable granularity. */
+  private pickables: THREE.Mesh[] = [];
+  private highlight = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({
+      color: 0xff5544,
+      transparent: true,
+      opacity: 0.35,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    })
+  );
+  private lastHover = 0;
+
   onPlace: ((point: THREE.Vector3) => void) | null = null;
   placing = false;
+  onHideClick: ((name: string) => void) | null = null;
+  hiding = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -89,27 +113,77 @@ export class Viewer {
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
 
+    this.highlight.visible = false;
+    this.highlight.matrixAutoUpdate = false;
+    this.scene.add(this.highlight);
+
     canvas.addEventListener("pointerdown", (e) => {
-      if (!this.placing || !this.model || e.button !== 0) return;
-      const r = canvas.getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((e.clientX - r.left) / r.width) * 2 - 1,
-        -((e.clientY - r.top) / r.height) * 2 + 1
-      );
-      this.raycaster.setFromCamera(ndc, this.camera);
-      const hits = this.raycaster.intersectObject(this.model, true);
-      if (hits.length) {
+      if (!this.model || e.button !== 0) return;
+      if (this.hiding) {
+        const hit = this.pick(e);
+        if (hit) {
+          hit.visible = false;
+          this.highlight.visible = false;
+          this.onHideClick?.(hit.name);
+        }
+        return;
+      }
+      if (!this.placing) return;
+      const hits = this.castFromEvent(e);
+      const hit = hits.find((h) => h.object.visible);
+      if (hit) {
         // Nudge toward the camera — face normals in .skp content are
         // unreliable, but "toward the viewer" always lands inside the room.
-        const p = hits[0].point.clone();
+        const p = hit.point.clone();
         const toCam = this.camera.position.clone().sub(p).normalize();
         p.addScaledVector(toCam, 0.2);
         this.onPlace?.(p);
       }
     });
 
+    canvas.addEventListener("pointermove", (e) => {
+      if (!this.hiding) return;
+      const now = performance.now();
+      if (now - this.lastHover < 33) return; // raycasts are pricey on big scenes
+      this.lastHover = now;
+      this.setHighlight(this.pick(e));
+    });
+
     this.resize();
     this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  private castFromEvent(e: PointerEvent): THREE.Intersection[] {
+    const canvas = this.renderer.domElement;
+    const r = canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    return this.raycaster.intersectObjects(this.pickables, false);
+  }
+
+  /** Frontmost visible object mesh under the cursor. */
+  private pick(e: PointerEvent): THREE.Mesh | null {
+    const hit = this.castFromEvent(e).find((h) => h.object.visible);
+    return (hit?.object as THREE.Mesh) ?? null;
+  }
+
+  private setHighlight(mesh: THREE.Mesh | null) {
+    if (!mesh) {
+      this.highlight.visible = false;
+      return;
+    }
+    this.highlight.geometry = mesh.geometry; // shared — never disposed here
+    this.highlight.matrix.copy(mesh.matrixWorld);
+    this.highlight.visible = true;
+  }
+
+  /** Hide exactly the named objects, show everything else. */
+  setHidden(names: string[]) {
+    const set = new Set(names);
+    for (const m of this.pickables) m.visible = !set.has(m.name);
   }
 
   resize() {
@@ -182,6 +256,9 @@ export class Viewer {
       });
       this.model = null;
     }
+    this.pickables = [];
+    this.highlight.visible = false;
+    this.highlight.geometry = new THREE.BufferGeometry();
 
     const manager = new THREE.LoadingManager();
     manager.setURLModifier((url) => {
@@ -200,6 +277,7 @@ export class Viewer {
       if (!mesh.isMesh) return;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      this.pickables.push(mesh);
       triangles += (mesh.geometry.getAttribute("position")?.count ?? 0) / 3;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       mats.forEach((mat) => {
@@ -412,6 +490,7 @@ export class Viewer {
     const w = canvas.clientWidth, h = canvas.clientHeight;
     const wasVisible = this.markers.visible;
     this.markers.visible = false;
+    this.highlight.visible = false;
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(w * multiplier, h * multiplier, false);
     this.camera.aspect = w / h;

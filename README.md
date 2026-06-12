@@ -38,8 +38,11 @@ photo mode: walk into the scene, frame the shot, light it, capture.
 - **Window light** — click a window with the Window preset and a soft, wide,
   shadow-casting light shines into the room (oriented toward where you're standing,
   so it always lights the interior regardless of which way the glass faces).
-- **Undo** — Cmd+Z steps back through light placements/edits, daylight changes,
-  sky swaps, and bookmark changes.
+- **Hide objects** — click roofs, ceilings, or walls to remove them from view and
+  capture, Snaptoon-style. Hover highlights what you're about to hide; the panel
+  lists hidden objects for one-click restore. Hidden state persists per scene.
+- **Undo** — Cmd+Z steps back through light placements/edits, object hides,
+  daylight changes, sky swaps, and bookmark changes.
 - **Jump to area** — a dropdown of places in the scene: the author's saved SketchUp
   views when the file has them, plus rooms auto-detected from the model's group
   structure (filtered to room-sized spaces; wall slivers and furniture excluded).
@@ -120,7 +123,7 @@ Copy `Backlot.app` to `/Applications`.
 
 ## Roadmap
 
-- Outliner/layer toggles (hide roof to shoot interiors top-down)
+- Layered PSD export (hidden/masked objects as separate layers for Clip Studio)
 - Two-point perspective mode
 - GLB cache format (smaller, faster loads)
 - Depth/line-art export passes

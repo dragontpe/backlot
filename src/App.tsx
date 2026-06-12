@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Viewer, PointLightDef, CameraBookmark } from "./viewer/Viewer";
+import { Viewer, PointLightDef, CameraBookmark, objectLabel } from "./viewer/Viewer";
 import { formatHour } from "./viewer/daylight";
 
 const IS_TAURI = "__TAURI_INTERNALS__" in window;
@@ -75,6 +75,8 @@ interface SceneState {
   skyPath: string | null;
   lights: PointLightDef[];
   bookmarks: CameraBookmark[];
+  /** OBJ object names ("objN label") hidden from view & capture. */
+  hidden: string[];
 }
 
 const DEFAULT_STATE: SceneState = {
@@ -84,6 +86,7 @@ const DEFAULT_STATE: SceneState = {
   skyPath: null,
   lights: [],
   bookmarks: [],
+  hidden: [],
 };
 
 export default function App() {
@@ -100,6 +103,7 @@ export default function App() {
   const [bookmarkName, setBookmarkName] = useState("");
   const [views, setViews] = useState<SavedView[]>([]);
   const [markersVisible, setMarkersVisible] = useState(true);
+  const [hiding, setHiding] = useState(false);
 
   // Undo: snapshots of SceneState. Slider drags coalesce by key.
   const undoStack = useRef<SceneState[]>([]);
@@ -173,6 +177,7 @@ export default function App() {
     v.setTimeOfDay(snapshot.time);
     v.setExposure(snapshot.exposure);
     v.setFov(snapshot.fov);
+    v.setHidden(snapshot.hidden ?? []);
     setState((prev) => {
       if (snapshot.skyPath !== prev.skyPath) {
         (async () => {
@@ -249,6 +254,7 @@ export default function App() {
       v.setTimeOfDay(restored.time);
       v.setExposure(restored.exposure);
       v.setFov(restored.fov);
+      v.setHidden(restored.hidden);
       if (restored.skyPath) {
         try {
           await v.setSkyImage(IS_TAURI ? await assetUrl(restored.skyPath) : restored.skyPath);
@@ -315,6 +321,7 @@ export default function App() {
 
   // ---- lights ----
   function startPlacing(preset: (typeof LIGHT_PRESETS)[number]) {
+    stopHiding();
     const v = viewerRef.current!;
     // placing a light you can't see is guesswork — force markers on
     setMarkersVisible(true);
@@ -350,6 +357,50 @@ export default function App() {
     v.placing = false;
     v.onPlace = null;
     setPlacing(null);
+  }
+
+  // ---- hide objects ----
+  function startHiding() {
+    cancelPlacing();
+    const v = viewerRef.current!;
+    setHiding(true);
+    v.hiding = true;
+    // Stays in hide mode — each click hides one object (own undo step).
+    v.onHideClick = (name) => {
+      pushUndo(`hide-${Date.now()}`);
+      setState((prev) => {
+        const next = { ...prev, hidden: [...prev.hidden, name] };
+        persist(next);
+        return next;
+      });
+    };
+  }
+
+  function stopHiding() {
+    const v = viewerRef.current!;
+    v.hiding = false;
+    v.onHideClick = null;
+    setHiding(false);
+  }
+
+  function unhideObject(name: string) {
+    pushUndo(`unhide-${Date.now()}`);
+    setState((prev) => {
+      const next = { ...prev, hidden: prev.hidden.filter((n) => n !== name) };
+      viewerRef.current!.setHidden(next.hidden);
+      persist(next);
+      return next;
+    });
+  }
+
+  function unhideAll() {
+    pushUndo(`unhide-all-${Date.now()}`);
+    setState((prev) => {
+      const next = { ...prev, hidden: [] };
+      viewerRef.current!.setHidden([]);
+      persist(next);
+      return next;
+    });
   }
 
   function changeLight(id: number, patch: Partial<PointLightDef>) {
@@ -459,6 +510,11 @@ export default function App() {
               Click a surface to place “{placing.name}” — <button onClick={cancelPlacing}>cancel</button>
             </div>
           )}
+          {hiding && (
+            <div className="placing-hint">
+              Click objects to hide them — <button onClick={stopHiding}>done</button>
+            </div>
+          )}
           <div className="nav-help">drag orbit · scroll zoom · WASD fly · QE up/down · arrows pan · shift fast</div>
         </div>
 
@@ -542,6 +598,33 @@ export default function App() {
                 />
                 Show light markers
               </label>
+            )}
+          </section>
+
+          <section>
+            <h3>Objects</h3>
+            <div className="row buttons">
+              <button className="btn" onClick={hiding ? stopHiding : startHiding} disabled={busy}>
+                {hiding ? "Done hiding" : "Hide objects…"}
+              </button>
+              {state.hidden.length > 1 && (
+                <button className="btn" onClick={unhideAll}>
+                  Show all
+                </button>
+              )}
+            </div>
+            {state.hidden.map((name) => (
+              <div className="bookmark-row" key={name}>
+                <span className="objname" title={name}>
+                  {objectLabel(name)}
+                </span>
+                <button className="btn tiny" onClick={() => unhideObject(name)} title="Show again">
+                  👁
+                </button>
+              </div>
+            ))}
+            {state.hidden.length === 0 && !hiding && (
+              <div className="hint">Hide roofs, ceilings or walls to shoot into rooms. Cmd+Z undoes.</div>
             )}
           </section>
 
